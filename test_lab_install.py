@@ -1,0 +1,166 @@
+"""Bounded offline checks for the cross-platform lab installer preset."""
+
+import json
+from pathlib import Path
+import os
+import tempfile
+import getpass
+import contextlib
+import sys
+from types import SimpleNamespace
+import unittest
+from unittest import mock
+
+import codex_provider as c
+
+
+class LabInstallTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+
+    def test_catalog_only_explicit_v1(self):
+        connection = {"catalog_source": str(Path(__file__).parent / "model_catalog.json")}
+        with mock.patch.object(c, "state_directory", return_value=self.root):
+            catalog = c.native_catalog(connection, [], v1_only=True)
+        models = json.loads(catalog.read_text())["models"]
+        self.assertTrue(models)
+        self.assertTrue(all(m.get("multi_agent_version") == "v1" for m in models))
+        self.assertIn(c.LAB_CPR_MODEL, {m["slug"] for m in models})
+        self.assertNotIn("gpt-6.1-sol", {m["slug"] for m in models})
+
+    def test_migration_copies_wal_and_retains_source(self):
+        source, dest = self.root / "old", self.root / "new"
+        source.mkdir()
+        original = {"state_5.sqlite": b"db", "state_5.sqlite-wal": b"wal", "state_5.sqlite-shm": b"shm",
+                    "queue_1.sqlite": b"queue"}
+        for filename, content in original.items():
+            (source / filename).write_bytes(content)
+        with mock.patch.object(c.subprocess, "run", return_value=mock.Mock(stdout="")):
+            c.migrate_sqlite_when_idle(source, dest)
+        for filename, content in original.items():
+            self.assertEqual((dest / filename).read_bytes(), content)
+            self.assertEqual((source / filename).read_bytes(), content)
+            self.assertEqual((dest / filename).stat().st_mode & 0o777, 0o600)
+
+    def test_migration_does_not_mix_databases_or_interrupt_writer(self):
+        source, dest = self.root / "old", self.root / "new"
+        source.mkdir()
+        (source / "state_5.sqlite").write_bytes(b"old")
+        dest.mkdir()
+        (dest / "state_5.sqlite").write_bytes(b"new")
+        with self.assertRaisesRegex(ValueError, "均有数据"):
+            c.migrate_sqlite_when_idle(source, dest)
+        self.assertEqual((dest / "state_5.sqlite").read_bytes(), b"new")
+        (dest / "state_5.sqlite").unlink()
+        with mock.patch.object(c.subprocess, "run", return_value=mock.Mock(stdout="codex\n")):
+            with self.assertRaisesRegex(ValueError, "仍有 Codex"):
+                c.migrate_sqlite_when_idle(source, dest)
+        self.assertFalse((dest / "state_5.sqlite").exists())
+
+    def test_lab_mode_selects_official_client_and_passes_contract(self):
+        catalog = self.root / "models.json"
+        catalog.write_text(json.dumps({"models": [{"slug": c.LAB_CPR_MODEL, "visibility": "list"}]}))
+        captured = {}
+
+        def configure(args, **kwargs):
+            captured["config_args"] = args
+            captured["unrelated_env_key_excluded"] = "CODEX_PROVIDER_API_KEY" not in os.environ
+            return {"url": c.LAB_CPR_URL, "api_key": "never-print-this-test-key"}, catalog
+
+        def native_configure(binary, connection, model, lab_sqlite=None):
+            captured.update(binary=binary, model=model, sqlite=lab_sqlite)
+            return {"restart_required": False}
+
+        mocks = [
+            mock.patch.object(c, "state_directory", return_value=self.root),
+            mock.patch.object(c, "saved_connection", return_value=None),
+            mock.patch.object(c, "lab_sqlite_home", return_value="/tmp/example/codex-sqlite"),
+            mock.patch.object(c, "official_client", return_value=["/verified/official/codex"]),
+            mock.patch.object(c, "native_client", side_effect=AssertionError("must not use modified client")),
+            mock.patch.object(c, "configure", side_effect=configure),
+            mock.patch.object(c, "client_version", return_value="0.162.1"),
+            mock.patch.object(c, "native_preflight", return_value={"status": "network_ok"}),
+            mock.patch.object(c, "native_configure", side_effect=native_configure),
+            mock.patch.object(c, "model_check", return_value={"status": "passed", "code": "READY"}),
+            mock.patch.object(c, "native_check_report", return_value={"status": "passed", "code": "READY"}),
+            mock.patch.object(c, "lab_client_path"),
+        ]
+        from contextlib import ExitStack
+        with ExitStack() as stack:
+            stack.enter_context(mock.patch.dict(os.environ, {"CODEX_PROVIDER_API_KEY": "unrelated-service-test-secret"}))
+            for patch in mocks:
+                stack.enter_context(patch)
+            self.assertEqual(c.native_setup(["--lab"]), 0)
+        self.assertEqual(captured["binary"], ["/verified/official/codex"])
+        self.assertEqual(captured["model"], c.LAB_CPR_MODEL)
+        self.assertEqual(captured["sqlite"], "/tmp/example/codex-sqlite")
+        self.assertEqual(captured["config_args"], ["--url", c.LAB_CPR_URL])
+        self.assertTrue(captured["unrelated_env_key_excluded"])
+
+    def test_macos_uses_local_temp_sqlite_without_ssh(self):
+        parent = self.root / "macos-temp" / getpass.getuser() / "codex-lab"
+        with mock.patch.object(c.sys, "platform", "darwin"), \
+                mock.patch.object(c.tempfile, "gettempdir", return_value=str(self.root / "macos-temp")), \
+                mock.patch.object(c, "provider_settings", return_value={}), \
+                mock.patch.object(c, "state_directory", return_value=self.root / ".codex"), \
+                mock.patch.object(c, "migrate_sqlite_when_idle") as migrate:
+            with mock.patch.dict(os.environ, {"CODEX_SQLITE_HOME": ""}):
+                dest = c.lab_sqlite_home()
+        self.assertEqual(Path(dest), parent / "codex-sqlite")
+        self.assertEqual(migrate.call_args.args[1], parent / "codex-sqlite")
+
+    def test_windows_launcher_preserves_existing_client_and_user_path(self):
+        entry = self.root / "bin" / "codex.cmd"
+        registry = {"Path": r"C:\ExistingTools"}
+
+        def get_value(_key, name):
+            return registry[name], 2
+
+        def set_value(_key, name, _reserved, _kind, value):
+            registry[name] = value
+
+        winreg = SimpleNamespace(HKEY_CURRENT_USER=1, KEY_READ=1, KEY_SET_VALUE=2,
+                                 REG_EXPAND_SZ=2, OpenKey=lambda *args: contextlib.nullcontext(object()),
+                                 QueryValueEx=get_value, SetValueEx=set_value)
+        with mock.patch.dict(sys.modules, {"winreg": winreg}):
+            c.lab_windows_client_path(r"C:\Official Codex\codex.exe", entry)
+            self.assertIn('"C:\\Official Codex\\codex.exe" %*', entry.read_text())
+            self.assertEqual(registry["Path"], str(entry.parent) + r";C:\ExistingTools")
+            c.lab_windows_client_path(r"C:\Official Codex\codex.exe", entry)
+            self.assertEqual(registry["Path"].count(str(entry.parent)), 1)
+
+    def test_windows_launcher_does_not_replace_unrelated_file(self):
+        entry = self.root / "codex.cmd"
+        entry.write_text("@echo old user file\n")
+        with self.assertRaisesRegex(ValueError, "无关文件"):
+            c.lab_windows_client_path(r"C:\Official\codex.exe", entry)
+        self.assertEqual(entry.read_text(), "@echo old user file\n")
+
+    def test_unix_launcher_prioritizes_official_binary_without_replacing_old_one(self):
+        old = self.root / "old-codex"
+        old.write_text("old customized client\n")
+        official = self.root / "official-codex"
+        official.write_text("official client\n")
+        with mock.patch.object(c.Path, "home", return_value=self.root):
+            entry = c.lab_client_path([str(official)])
+            self.assertTrue(entry.is_symlink())
+            self.assertEqual(entry.resolve(), official)
+            self.assertEqual(old.read_text(), "old customized client\n")
+            c.lab_client_path([str(official)])
+            bashrc = (self.root / ".bashrc").read_text()
+            self.assertEqual(bashrc.count("export PATH="), 1)
+
+    def test_legacy_lab_ywl_flag_remains_supported(self):
+        # Same parser alias remains available to users of an earlier candidate.
+        with mock.patch.object(c, "state_directory", return_value=self.root), \
+                mock.patch.object(c, "saved_connection", return_value=None), \
+                mock.patch.object(c, "lab_sqlite_home", return_value="/tmp/x/codex-sqlite"), \
+                mock.patch.object(c, "official_client", side_effect=ValueError("intentional-stop-before-network")), \
+                self.assertRaisesRegex(ValueError, "intentional-stop-before-network"):
+            c.native_setup(["--lab-ywl"])
+
+
+if __name__ == "__main__":
+    unittest.main()

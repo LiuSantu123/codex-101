@@ -1,0 +1,34 @@
+name: Installation tests
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: ${{ matrix.os }} / Python 3.11
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Unit and installer contract tests
+        run: python -m unittest -q test_lab_install test_onboarding test_profiles
+      - name: Bash installer syntax
+        if: runner.os != 'Windows'
+        run: bash -n install.sh
+      - name: PowerShell installer syntax
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $tokens = $null
+          $errors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path ./install.ps1).Path, [ref]$tokens, [ref]$errors) | Out-Null
+          if ($errors.Count) { $errors | ForEach-Object { Write-Error $_ }; exit 1 }
