@@ -51,33 +51,36 @@
 | 模型 ID | 中文解释及用途 |
 | --- | --- |
 | **`chatgpt-web/gpt-6-tools-temp`** | **默认推荐**；GPT-6、能调用 Codex 工具、Web 临时会话。适合改代码、阅读文件、写分析脚本。 |
-| `chatgpt-web/gpt-6-tools-persist` | 同为 GPT-6 Tools，但对应 **Web 保存历史**的会话；需要这种行为时才选。|
-| `chatgpt-web/gpt-6-chat-temp` | GPT-6 的 **Chat** 模式、Web 临时会话；适合讨论思路、解释概念，不推荐作为自动编辑代码的默认代理。|
-| `chatgpt-web/gpt-6-chat-persist` | GPT-6 Chat + Web 保存历史；适合持续文字讨论，不是首选工具代理。|
+| `chatgpt-web/gpt-6-tools-persist` | 同为 GPT-6 Tools，但会保存 **Web 账号聊天历史**；适合需要以后回查的工具会话。|
+| `chatgpt-web/gpt-6-chat-temp` | GPT-6 的 **Chat** 模式、Web 临时会话；更偏普通问答、概念解释与讨论，不是完整的 Codex 工具工作流。|
+| `chatgpt-web/gpt-6-chat-persist` | GPT-6 Chat + Web 保存历史；适合以后继续文字讨论，不是首选工具代理。|
 | `chatgpt-web/gpt-5.6-tools-temp` | GPT-5.6 的工具模式，Web 临时会话；GPT-6 路由出现兼容问题时可作为明确可测的备选。|
 | `chatgpt-web/gpt-5.6-tools-persist` | GPT-5.6 Tools + Web 保存历史；需要历史行为时使用。|
 | `chatgpt-web/gpt-5.6-chat-temp` | GPT-5.6 Chat + Web 临时会话；文字问答。|
 | `chatgpt-web/gpt-5.6-chat-persist` | GPT-5.6 Chat + Web 保存历史；文字问答。|
 | `gpt-5.6-luna` | 旧版轻量/快速模型；简单解释或小任务可尝试，能力以实际验证为准。|
 
-**读懂名称：** `Tools` 指面向工具调用，`Chat` 指对话；`Temporary` 是 Web 端临时聊天方式，`Persist` 是 Web 端保存历史方式。**Web 是否保存聊天历史与 Codex 本地 `sessions` 是两回事。** `high`、`xhigh`、`max` 是推理深度，**不是三个独立模型**；Web 条目的目录支持这些档位，默认使用 `high`。更深的档位可能更慢或占用更多额度。
+**`Tools` vs `Chat`：** `Tools` 是完整的 **Codex 工具模式**，能读写文件、执行命令，但上下文更偏代码、项目与自动操作；`Chat` 更偏一般性问答、文献思路、概念解释，不应指望它像 Tools 一样完成文件修改。要实际改代码就选 `Tools`；只是问问题可选 `Chat`。
 
-## 4. 为什么目录里还有其他模型？
+**`Temporary`（`temp`）vs `Persist`：** `Temporary` 不将 Web 会话保存进 ChatGPT **账号聊天历史**，留痕更少，适合临时或偏隐私的讨论；代价是隔一段时间后可能找不回同一个 Web 会话，**不要把它当成长期可恢复的工作记录**。`Persist` 保存 Web 账号侧的会话历史，更适合需要回查、持续讨论的任务。`Temporary` **不等于服务端零留存或绝对隐私**；两种模式与 Codex **本地 sessions** 的保存是两回事。长任务请把关键进展和结果写回项目文件。
 
-截至 2026-10-21，维护者上游目录有 **21 个条目**：其中 **11 条显式 V1**（9 个可见模型、2 个内部隐藏模型）；其余 **10 条**为 V2 或没有声明 V1。本仓库发行包的 `model_catalog.json` **只含 11 条 V1**，安装器再次校验，不会将非 V1 硬改成 V1。被排除是当前**客户端协作兼容策略**，不代表模型本身质量较差。
+`high`、`xhigh`、`max` 是推理深度，**不是三个独立模型**；Web 条目的目录支持这些档位，默认使用 `high`。更深的档位可能更慢或占用更多额度。
 
-| 目录中的其他系列 | 定位（来自维护目录） | 此安装模式 |
+## 4. 原本支持的 GPT 模型去哪了？
+
+截至 2026-10-21，上游维护目录也列出了下列 **原生 GPT 模型**（并非 `chatgpt-web/` 路由），可帮助理解命名和代际定位。它们在上游目录中标记支持 API，但**当前 V1-only 实验室预设不能选择**：这些条目标记为 V2 协作协议，或未声明 V1。请不要把“上游列出”当成当前 Key 已开通或本地能调用。
+
+| 上游原生 GPT 模型 | 主要定位（来自维护目录） | 当前实验室安装 |
 | --- | --- | --- |
-| `gpt-6.1-sol` | 新一代通用编程 / 日常任务主力 | 标记 V2，暂不列出 |
-| `gpt-6-astra` | 更复杂、要求最高的任务 | 标记 V2，暂不列出 |
-| `gpt-6-sol` / `gpt-6-luna` | 较早通用主力 / 快速轻量模型 | 标记 V2，暂不列出 |
-| `gpt-5.6-sol` / `gpt-5.6-terra` | 更早一代主力 / 平衡模型 | 标记 V2，暂不列出 |
-| `gpt-5.5` | 旧版编程模型 | 没声明 V1，暂不列出 |
-| `deepseek/deepseek-v4.1-flash` | 通过 Sub2API 路由的第三方模型 | 没声明 V1，暂不列出 |
-| `gpt-daybreak-blue-latest` / `gpt-daybreak-red-latest` | 专门的安全研究模型 | 隐藏、V2，暂不列出 |
-| `gpt-reserve` / `codex-auto-review` | 备用代理模型 / 自动审批审查 | V1，但为内部隐藏条目，不出现在普通菜单 |
+| `gpt-6.1-sol` | 最新一代日常编程、通用任务主力 | V2；不可选 |
+| `gpt-6-astra` | 复杂度高、需要更强推理的任务 | V2；不可选 |
+| `gpt-6-sol` | 上一代通用任务主力 | V2；不可选 |
+| `gpt-6-luna` | 上一代快速、轻量的简单任务模型 | V2；不可选 |
+| `gpt-5.6-sol` | 更早一代通用任务主力 | V2；不可选 |
+| `gpt-5.6-terra` | 更早一代平衡型模型 | V2；不可选 |
+| `gpt-5.5` | 旧版编程模型 | 未声明 V1；不可选 |
 
-**能在目录中看到 ≠ 该 Key 有权限 ≠ 能成功完成工具调用。** 实际可用性以当前 `/models` 权限和安装器真实工具调用测试为准；不以“菜单显示了模型”代替验收。
+**可实际选择的仍是第 3 节的 9 个模型。** 当前发行包的 `model_catalog.json` 共保留上游目录中 **11 个显式 V1 条目**，其中 9 个正常可见、2 个内部隐藏。安装器不会把 V2 模型的元数据伪改为 V1。**目录中看到 ≠ Key 有权限 ≠ 能成功完成工具调用**，应以当前 `/models` 权限及官方客户端真实工具调用为准。
 
 ## 5. `Reconnecting...` 或失败时怎么办？
 
@@ -92,6 +95,7 @@
 | `CHECK_PENDING` / `SERVER_BUSY` | 等旧任务或旧自检完成；**重跑同一入口查询状态**，不要额外提交相同请求。|
 | `SERVER_RESTART_REQUIRED` | 让旧任务结束，重跑安装；只允许空闲重启。|
 | `UPSTREAM_COMPAT` | 让维护者修 CPR/ChatGPT Web 桥接兼容；重装官方 CLI 无法修服务端协议。|
+| `UPSTREAM_READINESS` | CPR Web personalization preflight 一直超时；联系维护者检查桥接和账号 readiness。继续重复安装无效。|
 | `OUTPUT_MISMATCH` / 未 READY | 联系管理员，提供**脱敏**状态和时间；不要提供 Key 或整个 `~/.codex`。|
 
 维护者检查优先级：分别记录断线发生时的 Codex 版本、CPR 状态、HTTP/SSE 事件是否完成、代理闲置超时、429/502/503/504 情况；区分终态失败与仍在进行的请求。客户端配置只能缓解短暂断流，不能把服务端失败伪装成成功。

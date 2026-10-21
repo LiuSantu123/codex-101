@@ -1348,6 +1348,9 @@ def select_model(connection, catalog, requested=None):
 def check_problem(message):
     """只分类可观察的错误；不猜测 key 或自动绕过网络/权限。"""
     lower = message.lower()
+    if "personalization preflight exceeded its readiness deadline" in lower:
+        return "UPSTREAM_READINESS", ("CPR 上游 ChatGPT personalization 预检连续超时；客户端重试不能修复服务端 readiness。"
+                                      "请维护者检查 Web 桥接及账号会话，再恢复原自检；不要再次提交未终结回合。")
     if any(text in message for text in ("请先安装官方", "CODEX_BINARY", "无法识别 codex", "客户端不存在")):
         return "CLIENT", "客户端缺失或不可用；运行 repair。若显式设置了 CODEX_BINARY，请先修正该路径。"
     if "尚未配置" in message or "没有密钥" in message:

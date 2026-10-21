@@ -24,11 +24,16 @@ class LabInstallTests(unittest.TestCase):
         connection = {"catalog_source": str(Path(__file__).parent / "model_catalog.json")}
         with mock.patch.object(c, "state_directory", return_value=self.root):
             catalog = c.native_catalog(connection, [], v1_only=True)
-        models = json.loads(catalog.read_text())["models"]
+        models = json.loads(catalog.read_text(encoding="utf-8"))["models"]
         self.assertTrue(models)
         self.assertTrue(all(m.get("multi_agent_version") == "v1" for m in models))
         self.assertIn(c.LAB_CPR_MODEL, {m["slug"] for m in models})
         self.assertNotIn("gpt-6.1-sol", {m["slug"] for m in models})
+
+    def test_real_upstream_readiness_failure_is_not_misdiagnosed_as_local_network(self):
+        code, hint = c.check_problem("Reconnecting... 1/12 (stream disconnected before completion: ChatGPT personalization preflight exceeded its readiness deadline)")
+        self.assertEqual(code, "UPSTREAM_READINESS")
+        self.assertIn("维护者", hint)
 
     def test_migration_copies_wal_and_retains_source(self):
         source, dest = self.root / "old", self.root / "new"
@@ -42,7 +47,8 @@ class LabInstallTests(unittest.TestCase):
         for filename, content in original.items():
             self.assertEqual((dest / filename).read_bytes(), content)
             self.assertEqual((source / filename).read_bytes(), content)
-            self.assertEqual((dest / filename).stat().st_mode & 0o777, 0o600)
+            if os.name != "nt":
+                self.assertEqual((dest / filename).stat().st_mode & 0o777, 0o600)
 
     def test_migration_does_not_mix_databases_or_interrupt_writer(self):
         source, dest = self.root / "old", self.root / "new"
@@ -54,7 +60,8 @@ class LabInstallTests(unittest.TestCase):
             c.migrate_sqlite_when_idle(source, dest)
         self.assertEqual((dest / "state_5.sqlite").read_bytes(), b"new")
         (dest / "state_5.sqlite").unlink()
-        with mock.patch.object(c.subprocess, "run", return_value=mock.Mock(stdout="codex\n")):
+        running_process = '"codex.exe"\n' if os.name == "nt" else "codex\n"
+        with mock.patch.object(c.subprocess, "run", return_value=mock.Mock(stdout=running_process)):
             with self.assertRaisesRegex(ValueError, "仍有 Codex"):
                 c.migrate_sqlite_when_idle(source, dest)
         self.assertFalse((dest / "state_5.sqlite").exists())
@@ -138,6 +145,20 @@ class LabInstallTests(unittest.TestCase):
             c.lab_windows_client_path(r"C:\Official\codex.exe", entry)
         self.assertEqual(entry.read_text(), "@echo old user file\n")
 
+    def test_windows_temp_sqlite_directory_is_user_scoped(self):
+        base = self.root / "windows-temp"
+        with mock.patch.object(c.sys, "platform", "win32"), \
+                mock.patch.object(c.tempfile, "gettempdir", return_value=str(base)), \
+                mock.patch.object(c, "provider_settings", return_value={}), \
+                mock.patch.object(c, "state_directory", return_value=self.root / ".codex"), \
+                mock.patch.object(c, "secure_directory"), \
+                mock.patch.object(c, "migrate_sqlite_when_idle") as migrate, \
+                mock.patch.dict(os.environ, {"CODEX_SQLITE_HOME": ""}):
+            dest = c.lab_sqlite_home()
+        self.assertEqual(Path(dest), base / getpass.getuser() / "codex-lab" / "codex-sqlite")
+        self.assertEqual(migrate.call_args.args[1], Path(dest))
+
+    @unittest.skipIf(os.name == "nt", "POSIX symlink and shell profile behavior")
     def test_unix_launcher_prioritizes_official_binary_without_replacing_old_one(self):
         old = self.root / "old-codex"
         old.write_text("old customized client\n")
@@ -146,7 +167,7 @@ class LabInstallTests(unittest.TestCase):
         with mock.patch.object(c.Path, "home", return_value=self.root):
             entry = c.lab_client_path([str(official)])
             self.assertTrue(entry.is_symlink())
-            self.assertEqual(entry.resolve(), official)
+            self.assertEqual(entry.resolve(), official.resolve())
             self.assertEqual(old.read_text(), "old customized client\n")
             c.lab_client_path([str(official)])
             bashrc = (self.root / ".bashrc").read_text()

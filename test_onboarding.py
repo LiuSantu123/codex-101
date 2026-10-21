@@ -581,7 +581,7 @@ class NativeClientReuseTests(unittest.TestCase):
                 mock.patch.object(connector, "official_client", side_effect=AssertionError("must not download")), \
                 mock.patch.object(connector, "resolve_native_binary", return_value=binary):
             selected = connector.native_client()
-        self.assertEqual(Path(selected[0]).resolve(), binary)
+        self.assertEqual(Path(selected[0]).resolve(), binary.resolve())
 
     def test_unregistered_cached_download_is_reused(self):
         binary = self.client(connector.state_directory() / "official/0.163.0-linux-x64/package/vendor/x86_64-unknown-linux-musl/bin/codex")
@@ -589,7 +589,7 @@ class NativeClientReuseTests(unittest.TestCase):
                 mock.patch.object(connector, "official_client", side_effect=AssertionError("must not download")), \
                 mock.patch.object(connector, "resolve_native_binary", return_value=binary):
             selected = connector.native_client()
-        self.assertEqual(Path(selected[0]).resolve(), binary)
+        self.assertEqual(Path(selected[0]).resolve(), binary.resolve())
 
     def test_standalone_download_is_reused(self):
         binary = self.client(self.home / ".codex/packages/standalone/current/bin/codex")
@@ -597,7 +597,7 @@ class NativeClientReuseTests(unittest.TestCase):
                 mock.patch.object(connector, "official_client", side_effect=AssertionError("must not download")), \
                 mock.patch.object(connector, "resolve_native_binary", return_value=binary):
             selected = connector.native_client()
-        self.assertEqual(Path(selected[0]).resolve(), binary)
+        self.assertEqual(Path(selected[0]).resolve(), binary.resolve())
 
     def test_incompatible_existing_client_is_not_silently_reinstalled(self):
         binary = self.client(self.home / "bin/codex", "0.160.0")

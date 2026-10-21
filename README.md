@@ -51,7 +51,7 @@ codex
 
 ## 模型选择、配置细节与故障排查
 
-完整中文说明：[**安装教程与所有模型的用途对照**](docs/installation.md)。在 Codex 中输入 `/model` 选择模型；显示名 **不是** API ID。`Tools` 适合改代码/读文件，`Chat` 适合讨论；`Temporary`/`Persist` 分别对应 Web 端临时/保存历史。
+完整中文说明：[**安装教程与 GPT 模型用途对照**](docs/installation.md)。在 Codex 中输入 `/model` 选择模型；显示名 **不是** API ID。`Tools` 是完整的 Codex 工具模式，适合改代码、读文件（上下文偏编程）；`Chat` 更偏一般问答。`Temporary` **不会保存到 Web 账号聊天历史**，更少留痕，但日后可能找不回该 Web 会话；`Persist` 保留 Web 聊天历史，便于回查。临时模式不等于服务端零留存，且与本地 Codex sessions 是两回事。上游原生 GPT 的 Sol/Astra/Luna 等系列也有说明，但当前不符合 V1-only 的不会出现在模型菜单。
 
 出现 `Reconnecting...`：先确认上游回合是否终止；已提交的回合不能仅因前台断线而重复执行。重跑安装命令只恢复尚未完成的自检，不强制重启正在忙的服务。
 
