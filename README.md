@@ -57,6 +57,10 @@ codex
 
 ## 测试状态
 
-仓库的 GitHub Actions 对 Windows、macOS、Linux 运行离线合同测试和安装入口语法校验。**离线测试不能替代本人 Key 的端到端测试。** CPR `/models` 可用只证明模型权限；仅使用最后安装的官方客户端成功读取文件并返回匹配内容才能打印 `[READY]`。
+**v0.1.0 已作为 pre-release 发布，尚不是实机验证通过的稳定版。** 2026-10-21 的 [GitHub Actions 跨平台测试](https://github.com/Molaison/codex-101/actions/runs/39603874786) 已全部成功（Windows、macOS、Ubuntu）；Linux 本地 84 项离线测试通过。发行包四个文件已从公开 Release 重新下载并与源码逐一比对一致。
+
+**真实 CPR 验收仍未通过**：维护环境使用经官方 npm SHA512 校验的原版 Codex 0.162.1，`/models` 预检成功，9 个 V1 模型菜单可加载；两次独立真实只读工具调用均在 CPR 上游返回 `ChatGPT personalization preflight exceeded its readiness deadline`，终态为 `UPSTREAM_READINESS`，**没有 `[READY]`**。需要 CPR 桥接/账号会话维护者排查 readiness 后，再完成端到端验收。不得把菜单加载、离线 CI 或首次请求成功当成工具调用成功。
+
+**离线测试不能替代本人 Key 的端到端测试。** CPR `/models` 可用只证明模型权限；仅使用最终安装的官方客户端成功读取文件并返回匹配内容，才能打印 `[READY]`。
 
 本仓库从维护者的 [codex-provider-connect](https://github.com/Molaison/codex-provider-connect) 接入器演进而来，`codex_provider.py` 仍保留兼容入口。发行版锁定一个版本的 Shell / PowerShell 启动器、Python 助手和 V1 模型目录。
