@@ -1370,6 +1370,7 @@ def check_problem(message):
 
 def check_result(directory):
     record = json.loads((directory / "state.json").read_text(encoding="utf-8"))
+    identity = {"model": record["model"], "endpoint": record.get("connection", {}).get("url")}
     events = []
     output = directory / "events.jsonl"
     if output.exists():
@@ -1379,7 +1380,7 @@ def check_result(directory):
             except ValueError:
                 pass  # 正在写入的最后一行，下次继续读同一回合。
     if record["status"] not in ("terminal", "worker_error"):
-        return {"status": "running", "code": "CHECK_PENDING", "model": record["model"],
+        return {**identity, "status": "running", "code": "CHECK_PENDING",
                 "hint": "原自检仍在运行或终态待恢复；运行 doctor --check 查询同一回合，不要重投。"}
     final = directory / "final.txt"
     commands = [e.get("item", {}) for e in events if e.get("type") == "item.completed"
@@ -1390,11 +1391,11 @@ def check_result(directory):
                     and record["marker_path"] in str(item.get("command", "")) for item in commands)
     passed = completed and matches and file_read
     if passed:
-        return {"status": "passed", "code": "READY", "model": record["model"],
+        return {**identity, "status": "passed", "code": "READY",
                 "checked_at": record.get("finished_at"),
                 "hint": "该次真实只读工具调用、文件内容及回合终态均通过。"}
     if completed and file_read and not matches:
-        return {"status": "failed", "code": "OUTPUT_MISMATCH", "model": record["model"],
+        return {**identity, "status": "failed", "code": "OUTPUT_MISMATCH",
                 "hint": "工具读取成功，但模型回答与文件内容不一致；运行 repair 重新自检，仍失败请提供 doctor --json。",
                 "return_code": record.get("return_code")}
     messages = [str(e.get("message", e.get("error", ""))) for e in events
@@ -1405,7 +1406,7 @@ def check_result(directory):
         message = stderr.read_text(encoding="utf-8", errors="replace")
     code, hint = check_problem(message)
     # 不把原始响应/命令/headers 放进可分享的 doctor 输出。
-    return {"status": "failed", "code": code, "model": record["model"], "hint": hint,
+    return {**identity, "status": "failed", "code": code, "hint": hint,
             "return_code": record.get("return_code")}
 
 
@@ -1449,6 +1450,7 @@ def model_check(binary, connection, catalog, model, retry=False, wait_seconds=60
                     or previous.get("generation") != connection.get("generation")
                     or previous.get("binary") != binary or previous.get("native", False) != native):
                 return {"status": "failed", "code": "CHECK_CONNECTION_CHANGED",
+                        "endpoint": connection["url"], "previous_endpoint": previous["url"],
                         "hint": "地址、凭据、客户端或模型已变；旧自检不能代表新连接。先查询旧回合，再用 doctor --check --retry-check 验收。"}
         else:
             directory = None
@@ -1535,7 +1537,7 @@ def doctor(arguments, prepared=None):
         connection = connection or read_connection()
         catalog = catalog or fetch_catalog(connection, binary)
         model, visible = select_model(connection, catalog)
-        report.update(model=model, visible_models=visible, status="local_ok", code="LOCAL_OK",
+        report.update(model=model, endpoint=connection["url"], visible_models=visible, status="local_ok", code="LOCAL_OK",
                       hint="客户端、连接与最新目录正常；尚未验证真实模型调用。")
         if args.check:
             print("正在检查真实只读工具调用，最多等待 10 分钟；超时保留原回合，用同一命令查询。", file=sys.stderr)
@@ -1687,13 +1689,15 @@ def native_setup(arguments):
                             for key in ("url", "api_key", "auth_command", "auth_options", "default_model", "catalog_file", "integration", "client_version"))
     connection["generation"] = previous.get("generation") if same and previous.get("generation") else secrets.token_hex(12)
     preflight = native_preflight(connection, model)
+    preflight.update(endpoint=connection["url"], model=model)
     if preflight["status"] == "failed":
         private_json(state_directory() / "native-installation.json", preflight)
         print(json.dumps(preflight, ensure_ascii=False))
         return 1
     integration = native_configure(binary, connection, model, lab_sqlite=lab_sqlite)
     private_json(state_directory() / "connection.json", connection)
-    report = {"integration": "native", "installer_version": VERSION, "client_version": client_version(binary), **integration}
+    report = {"integration": "native", "installer_version": VERSION, "client_version": client_version(binary),
+              "endpoint": connection["url"], "model": model, **integration}
     if integration["restart_required"]:
         restarted, code, hint = native_restart(binary, integration, confirmed=args.restart_if_idle or args.lab)
         if not restarted:

@@ -35,6 +35,37 @@ class LabInstallTests(unittest.TestCase):
         self.assertEqual(code, "UPSTREAM_READINESS")
         self.assertIn("维护者", hint)
 
+    def test_check_results_identify_the_endpoint_actually_tested(self):
+        endpoint = "http://127.0.0.1:18082/v1"
+        for name, status, code in (("pending", "running", "CHECK_PENDING"),
+                                   ("failed", "terminal", "UPSTREAM_READINESS"),
+                                   ("passed", "terminal", "READY"),
+                                   ("mismatch", "terminal", "OUTPUT_MISMATCH"),
+                                   ("legacy", "running", "CHECK_PENDING")):
+            with self.subTest(name=name):
+                directory = self.root / name
+                directory.mkdir()
+                marker_path = str(directory / "marker.txt")
+                record = {"status": status, "model": c.LAB_CPR_MODEL,
+                          "connection": {"url": endpoint}, "marker": "CPC-test-END",
+                          "marker_path": marker_path,
+                          "return_code": 0 if name in ("passed", "mismatch") else 1}
+                if name == "legacy":
+                    record.pop("connection")
+                (directory / "state.json").write_text(json.dumps(record))
+                if name in ("passed", "mismatch"):
+                    events = [{"type": "item.completed", "item": {"type": "command_execution",
+                               "exit_code": 0, "command": marker_path,
+                               "aggregated_output": record["marker"]}}, {"type": "turn.completed"}]
+                    (directory / "final.txt").write_text(record["marker"] if name == "passed" else "wrong")
+                else:
+                    events = [{"type": "error", "message": "ChatGPT personalization preflight exceeded its readiness deadline"}]
+                (directory / "events.jsonl").write_text("\n".join(json.dumps(e) for e in events))
+                result = c.check_result(directory)
+                self.assertEqual(result["code"], code)
+                self.assertEqual(result["endpoint"], None if name == "legacy" else endpoint)
+                self.assertNotEqual(result["endpoint"], c.LAB_CPR_URL)
+
     def test_migration_copies_wal_and_retains_source(self):
         source, dest = self.root / "old", self.root / "new"
         source.mkdir()
@@ -105,6 +136,9 @@ class LabInstallTests(unittest.TestCase):
         self.assertEqual(captured["sqlite"], "/tmp/example/codex-sqlite")
         self.assertEqual(captured["config_args"], ["--url", c.LAB_CPR_URL])
         self.assertTrue(captured["unrelated_env_key_excluded"])
+        report = json.loads((self.root / "native-installation.json").read_text())
+        self.assertEqual(report["endpoint"], c.LAB_CPR_URL)
+        self.assertNotIn("never-print-this-test-key", json.dumps(report))
 
     def test_macos_uses_local_temp_sqlite_without_ssh(self):
         parent = self.root / "macos-temp" / getpass.getuser() / "codex-lab"

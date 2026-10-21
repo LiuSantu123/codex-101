@@ -59,7 +59,9 @@ codex
 
 **v0.1.0 已作为 pre-release 发布，尚不是实机验证通过的稳定版。** 2026-10-21 的 [GitHub Actions 跨平台测试](https://github.com/Molaison/codex-101/actions/runs/39603874786) 已全部成功（Windows、macOS、Ubuntu）；Linux 本地 84 项离线测试通过。发行包四个文件已从公开 Release 重新下载并与源码逐一比对一致。
 
-**真实 CPR 验收仍未通过**：维护环境使用经官方 npm SHA512 校验的原版 Codex 0.162.1，`/models` 预检成功，9 个 V1 模型菜单可加载；两次独立真实只读工具调用均在 CPR 上游返回 `ChatGPT personalization preflight exceeded its readiness deadline`，终态为 `UPSTREAM_READINESS`，**没有 `[READY]`**。需要 CPR 桥接/账号会话维护者排查 readiness 后，再完成端到端验收。不得把菜单加载、离线 CI 或首次请求成功当成工具调用成功。
+**目标 HTTPS CPR 的真实验收尚未完成。** 2026-10-22 复核发现：此前官方 Codex 0.162.1 的两次真实自检和 `/models` 预检用的是维护机**内网 HTTP API**，不是本安装器固定的 HTTPS 地址。现已从原会话恢复现有 ywl provider、`auth.command` 和官方隔离环境，无需用户重新提供配置或 Key；第三次同地址真实调用运行 **883 秒**后，仍以 `UPSTREAM_READINESS` 终止，工具未执行、没有 `[READY]`。当前内网阻塞是上游 readiness，不是缺少配置；该结果也不能直接归因于 HTTPS 入口。未携带 Key 访问 HTTPS `/v1/models` 返回预期的 401，不等于服务故障。后续仍需独立完成 HTTPS 真实调用及三平台用户环境验收，不同地址不能交叉复用 Key 或验收结果。
+
+维护者交接：[脱敏故障记录、只读查询命令与恢复条件](docs/01_cpr_acceptance.md)。
 
 **离线测试不能替代本人 Key 的端到端测试。** CPR `/models` 可用只证明模型权限；仅使用最终安装的官方客户端成功读取文件并返回匹配内容，才能打印 `[READY]`。
 

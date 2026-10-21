@@ -82,9 +82,11 @@
 
 **可实际选择的仍是第 3 节的 9 个模型。** 当前发行包的 `model_catalog.json` 共保留上游目录中 **11 个显式 V1 条目**，其中 9 个正常可见、2 个内部隐藏。安装器不会把 V2 模型的元数据伪改为 V1。**目录中看到 ≠ Key 有权限 ≠ 能成功完成工具调用**，应以当前 `/models` 权限及官方客户端真实工具调用为准。
 
+验收结果还必须对应**同一地址、模型和凭据**：内网 HTTP API 的测试不能代表本教程固定的 HTTPS 入口。维护者应核对自检 `state.json` 的 `connection.url` 与原生配置的 `base_url`；不能仅凭模型名或错误码沿用旧结果。地址范围更正见 [真实验收记录](01_cpr_acceptance.md)。
+
 ## 5. `Reconnecting...` 或失败时怎么办？
 
-过去有 CPR WebSocket 提前断流的现象；旧版安装器还将 `request_max_retries` 和 `stream_max_retries` 都设为 **0**。新预设改走 SSE，设置 **HTTP 8 次、SSE 12 次自动重试**，把 SSE 无事件空闲超时从默认 **5 分钟提高到 15 分钟**。这些是客户端缓解措施，不保证修复服务端故障；重试次数多也意味着严重故障时最终失败可能更晚。相关字段见 [OpenAI Codex 配置参考](https://learn.chatgpt.com/docs/config-file/config-reference)。
+过去有 CPR WebSocket 提前断流的现象；旧版安装器还将 `request_max_retries` 和 `stream_max_retries` 都设为 **0**。新预设改走 SSE，设置 **HTTP 8 次、SSE 12 次自动重试**，把 SSE 无事件空闲超时从默认 **5 分钟提高到 15 分钟**。这些是客户端缓解措施，不保证修复服务端故障；重试次数多也意味着严重故障时最终失败可能更晚。相关字段见 [OpenAI Codex 配置参考](https://developers.openai.com/codex/config-reference/)。
 
 先区分是 **终端/网络断线**、**Codex 与 CPR 的响应流断线**，还是 **Key 额度、服务端模型超时或 Web 桥接问题**。不要反复安装、反复提交同一请求，尤其是写文件、外部操作和长任务；先查原任务是否结束，再决定是否重试。
 
