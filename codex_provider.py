@@ -32,7 +32,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-VERSION = "0.1.0"
+VERSION = "0.1.1"
 OFFICIAL_CODEX_VERSION = "0.162.1"
 LAB_CPR_URL = "https://cpr.molaisonz.dpdns.org/v1"
 LAB_CPR_MODEL = "chatgpt-web/gpt-6-tools-temp"
@@ -642,6 +642,8 @@ def official_client(direct=False):
             usable = client_version([str(binary)]) == OFFICIAL_CODEX_VERSION
         except (ValueError, OSError, subprocess.SubprocessError):
             pass
+    if usable:
+        print("复用已缓存的官方 Codex %s，不重新下载。" % OFFICIAL_CODEX_VERSION, file=sys.stderr)
     if not usable:
         metadata_url = "https://registry.npmjs.org/@openai/codex/" + package_version
         with open_url(metadata_url, timeout=30, direct=direct) as response:
@@ -1487,7 +1489,9 @@ def model_check(binary, connection, catalog, model, retry=False, wait_seconds=60
                       "Do not delegate, inspect other files, write files, or retry on failure.")
             retry_options = ([] if native else ["-c", "model_providers.provider_connect.request_max_retries=0",
                                                "-c", "model_providers.provider_connect.stream_max_retries=0"])
-            arguments = ([] if native else ["--no-daemon"]) + ["-a", "never", "-s", "read-only"] + retry_options + [
+            # Native checks exercise the saved permission policy, including network access.
+            sandbox_options = [] if native else ["-s", "read-only"]
+            arguments = ([] if native else ["--no-daemon"]) + ["-a", "never"] + sandbox_options + retry_options + [
                          "exec", "--json", "--skip-git-repo-check", "--ephemeral", "-C", str(workspace),
                          "-m", model, "-o", str(directory / "final.txt"), prompt]
             private_json(directory / "state.json", {"status": "intent", "created_at": time.time(), "binary": binary,
@@ -1652,6 +1656,23 @@ def native_setup(arguments):
             private_json(state_directory() / "native-installation.json", result)
             print(json.dumps(result, ensure_ascii=False))
             return 2
+        # A known terminal upstream failure cannot be cured by reinstalling the
+        # client. Require an intentional retry or an explicit connection/model change.
+        expected_url = LAB_CPR_URL if args.lab else args.url or (previous or {}).get("url")
+        expected_model = args.model or (LAB_CPR_MODEL if args.lab else (previous or {}).get("default_model"))
+        if (result["status"] == "failed" and result["code"] == "UPSTREAM_READINESS"
+                and result.get("endpoint") == expected_url and result.get("model") == expected_model
+                and not (args.repair or args.reconfigure or args.skip_check or args.catalog_file
+                         or args.provider or args.restart_if_idle)):
+            result = native_check_report(result)
+            result["hint"] += " 已复用上次失败记录，未重新下载 Codex 或提交模型请求；上游恢复后加 --repair 显式重测。"
+            if args.lab and expected_model == LAB_CPR_MODEL:
+                result["hint"] += (" 若愿意让 Web 账号保存聊天历史，可以显式改用"
+                                   " --lab --model chatgpt-web/gpt-6-tools-persist；"
+                                   "是否可用仍须对当前 HTTPS 地址完成真实自检。")
+            private_json(state_directory() / "native-installation.json", result)
+            print(json.dumps(result, ensure_ascii=False))
+            return 1
         retry_failed = result["status"] == "failed"
     lab_sqlite = lab_sqlite_home() if args.lab else None
     binary = official_client() if args.lab else native_client()

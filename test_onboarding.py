@@ -99,6 +99,31 @@ print(json.dumps({'type':'turn.completed'}))
         self.assertEqual(self.calls(), 1)
         connection = original / "provider-connect/connection.json"
         self.assertEqual(connection.stat().st_mode & 0o777, 0o600)
+        current = json.loads((original / "provider-connect/checks/current.json").read_text())
+        record = json.loads((Path(current["directory"]) / "state.json").read_text())
+        arguments = record["arguments"]
+        self.assertEqual(arguments[arguments.index("-s") + 1], "read-only")
+
+    def test_native_check_inherits_saved_permissions_without_rewriting_config(self):
+        self.assertEqual(self.run_cli("setup", "--url", self.url, "--skip-check").returncode, 2)
+        config = self.home / "codex-home/config.toml"
+        config.write_text('sandbox_mode = "danger-full-access"\napproval_policy = "never"\n')
+        before = config.read_bytes()
+        with mock.patch.dict(os.environ, self.env, clear=True):
+            connection = connector.read_connection()
+            catalog = connector.state_directory() / "models.json"
+            result = connector.model_check([str(self.codex)], connection, catalog, MODEL,
+                                           wait_seconds=10, native=True)
+        self.assertEqual(result["code"], "READY")
+        record = json.loads(Path(result["record"]).read_text())
+        arguments = record["arguments"]
+        self.assertNotIn("-s", arguments)
+        self.assertNotIn("--sandbox", arguments)
+        self.assertEqual(arguments[arguments.index("-a") + 1], "never")
+        self.assertIn(record["marker_path"], arguments[-1])
+        self.assertNotIn(record["marker"], arguments[-1])
+        self.assertEqual(config.read_bytes(), before)
+        self.assertEqual(self.calls(), 1)
 
     def test_failed_legacy_setup_is_not_success_or_blindly_retried(self):
         installed = self.run_cli("setup", "--url", self.url, FIXTURE_FAIL="1")
@@ -228,6 +253,9 @@ class OfficialInstallTests(unittest.TestCase):
                 installed = connector.official_client()
                 self.assertEqual(connector.client_version(installed), "0.162.1")
                 self.assertFalse(json.loads(connector.client_record_path().read_text())["patched"])
+                with mock.patch.object(connector.urllib.request, "urlopen", side_effect=AssertionError("cached client must not fetch metadata")), \
+                        mock.patch.object(connector, "_download", side_effect=AssertionError("cached client must not download")):
+                    self.assertEqual(connector.official_client(), installed)
                 Path(installed[0]).unlink()
                 repaired = connector.setup_client()
                 self.assertEqual(connector.client_version(repaired), "0.162.1")
@@ -513,7 +541,8 @@ class NativeIntegrationTests(unittest.TestCase):
         source.mkdir()
         (source / "model_catalog.json").write_text('{"models":[{"slug":"fixture"}]}')
         (source / "codex_provider.py").write_text('''# codex-provider-connect\nVERSION = "%s"\nimport sys\nassert sys.argv[1] == "_native-setup"\nassert "--url" in sys.argv\nprint("fixture setup passed")\n''' % connector.VERSION)
-        env = dict(os.environ, PATH=os.environ.get("PATH", "/usr/bin:/bin"), CODEX_CONNECT_BASE=source.as_uri())
+        env = dict(os.environ, PATH=os.environ.get("PATH", "/usr/bin:/bin"),
+                   CODEX_CONNECT_BASE=source.as_uri(), CODEX_CONNECT_REF="v" + connector.VERSION)
         result = subprocess.run(["bash", str(ROOT / "install.sh"), "--url", self.connection["url"]],
                                 env=env, capture_output=True, text=True, timeout=15)
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -635,6 +664,7 @@ class ReleaseBootstrapTests(unittest.TestCase):
         self.missing_catalog = False
         self.mismatch = False
         self.flip_during_download = False
+        self.stable = None
         case = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -645,7 +675,16 @@ class ReleaseBootstrapTests(unittest.TestCase):
                 case.requests.append(self.path)
                 if self.path == "/releases/latest/download/install.sh":
                     source = (ROOT / "install.sh").read_text().replace("v" + connector.VERSION, case.latest)
-                    body = source.replace("https://github.com/Molaison/codex-101", case.base).encode()
+                    body = (source.replace("https://github.com/Molaison/codex-101", case.base)
+                                  .replace("https://api.github.com", case.base)).encode()
+                elif self.path == "/repos/Molaison/codex-101/releases?per_page=30":
+                    assets = [{"name": name} for name in
+                              ("install.sh", "install.ps1", "codex_provider.py", "model_catalog.json")]
+                    releases = [{"tag_name": case.latest, "draft": False, "prerelease": True, "assets": assets}]
+                    if case.stable:
+                        releases.append({"tag_name": case.stable, "draft": False,
+                                         "prerelease": False, "assets": assets})
+                    body = json.dumps(releases).encode()
                 else:
                     parts = self.path.split("/")
                     if len(parts) != 5 or parts[1:3] != ["releases", "download"]:
@@ -688,10 +727,30 @@ class ReleaseBootstrapTests(unittest.TestCase):
         self.assertEqual(updated.returncode, 0, updated.stderr)
         self.assertIn('VERSION = "' + self.future[1:] + '"', (self.root / "codex_provider.py").read_text())
         self.assertEqual(self.requests, ["/releases/latest/download/install.sh",
+            "/repos/Molaison/codex-101/releases?per_page=30",
             "/releases/download/v" + connector.VERSION + "/codex_provider.py",
             "/releases/download/v" + connector.VERSION + "/model_catalog.json",
-            "/releases/latest/download/install.sh", "/releases/download/" + self.future + "/codex_provider.py",
+            "/releases/latest/download/install.sh", "/repos/Molaison/codex-101/releases?per_page=30",
+            "/releases/download/" + self.future + "/codex_provider.py",
             "/releases/download/" + self.future + "/model_catalog.json"])
+
+    def test_repeated_same_tag_reuses_cached_helper_and_catalog(self):
+        first = self.install()
+        second = self.install()
+        self.assertEqual(first.returncode, 0, first.stderr)
+        self.assertEqual(second.returncode, 0, second.stderr)
+        self.assertIn("复用本地", second.stderr)
+        self.assertEqual(self.requests, ["/releases/latest/download/install.sh",
+            "/repos/Molaison/codex-101/releases?per_page=30",
+            "/releases/download/v" + connector.VERSION + "/codex_provider.py",
+            "/releases/download/v" + connector.VERSION + "/model_catalog.json",
+            "/releases/latest/download/install.sh", "/repos/Molaison/codex-101/releases?per_page=30"])
+
+    def test_stable_tag_is_preferred_over_newer_prerelease(self):
+        self.stable = "v0.1.0"
+        installed = self.install()
+        self.assertEqual(installed.returncode, 0, installed.stderr)
+        self.assertIn('VERSION = "0.1.0"', (self.root / "codex_provider.py").read_text())
 
     def test_entry_and_payload_downloads_avoid_broken_http2_streams(self):
         shim = self.home / "bin"
@@ -712,13 +771,14 @@ os.execv(%r, [%r] + sys.argv[1:])
         installed = self.install()
         self.assertEqual(installed.returncode, 0, installed.stderr)
         arguments = [json.loads(line) for line in calls.read_text().splitlines()]
-        self.assertEqual(len(arguments), 3)
+        self.assertEqual(len(arguments), 4)
         self.assertTrue(all("--http1.1" in call for call in arguments))
         self.assertIn("[READY]", installed.stdout)
 
     def test_missing_payload_or_version_mismatch_never_replaces_working_installation(self):
         self.assertEqual(self.install().returncode, 0)
         previous = {name: (self.root / name).read_bytes() for name in ("codex_provider.py", "model_catalog.json")}
+        self.latest = self.future  # A distinct tag must be fetched; a cached release is immutable.
         for failure in ("missing_catalog", "mismatch"):
             with self.subTest(failure=failure):
                 setattr(self, failure, True)

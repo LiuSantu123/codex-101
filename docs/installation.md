@@ -1,6 +1,6 @@
 # 实验室 Codex（codex-101）：Windows / macOS / Linux 使用教程
 
-> **安装原则**：同学只需安全输入自己的 Key。当前发布入口锁定 `codex-101` 的 **v0.1.0**；每台电脑都必须通过安装器自己的真实工具调用 `[READY]` 才算配置成功。仓库首发的跨平台实机验收范围以项目 [README](../README.md#测试状态) 为准。
+> **安装原则**：同学只需安全输入自己的 Key。入口自动选择最新稳定发布 tag；尚无稳定版时选最新预发布，载荷不混用版本。每台电脑都必须通过安装器自己的真实工具调用 `[READY]` 才算配置成功。实机验收范围以项目 [README](../README.md#测试状态) 为准。
 
 ## 1. 同学只需做一次
 
@@ -12,19 +12,21 @@
 
    ```bash
    (set -o pipefail; curl --http1.1 -fsSL --retry 2 \
-     https://github.com/Molaison/codex-101/releases/download/v0.1.0/install.sh \
+     https://raw.githubusercontent.com/Molaison/codex-101/main/install.sh \
      | bash -s -- --lab)
    ```
 
    **Windows PowerShell：**
 
    ```powershell
-   & ([scriptblock]::Create((Invoke-WebRequest -UseBasicParsing 'https://github.com/Molaison/codex-101/releases/download/v0.1.0/install.ps1').Content)) -Lab
+   & ([scriptblock]::Create((Invoke-WebRequest -UseBasicParsing 'https://raw.githubusercontent.com/Molaison/codex-101/main/install.ps1').Content)) -Lab
    ```
 
 4. 看到 **`[READY]` 且安装成功退出**后，打开**新终端**，进入自己的项目目录执行 `codex`。如果机器上已有同名定制版客户端占用 PATH，按安装器输出的路径运行实验室官方版；不要删除旧客户端。安装器若显示其他状态，不表示已通过真实模型测试。
 
 如果已有 Key 和配置，重复运行同一命令会尝试安全复用；无需再次输入。换 Key 时联系维护者按安装器的 `--reconfigure` 机制处理，**不要把 Key 粘贴进聊天或命令行参数**。
+
+**日常使用直接执行 `codex`，不需要再运行安装器。** 首次安装的官方二进制存入当前用户 `CODEX_HOME/provider-connect/official/`，同一版本完好时直接复用；同一发布 tag 的助手与模型目录也会缓存。只有首次安装、升级版本、缓存损坏或切换用户/`CODEX_HOME` 时才可能重新下载大包；安装器每次仅查询一下最新发布 tag。
 
 ## 2. 安装器为每个人自动完成什么
 
@@ -101,5 +103,7 @@
 | `OUTPUT_MISMATCH` / 未 READY | 联系管理员，提供**脱敏**状态和时间；不要提供 Key 或整个 `~/.codex`。|
 
 维护者检查优先级：分别记录断线发生时的 Codex 版本、CPR 状态、HTTP/SSE 事件是否完成、代理闲置超时、429/502/503/504 情况；区分终态失败与仍在进行的请求。客户端配置只能缓解短暂断流，不能把服务端失败伪装成成功。
+
+**如果是 `UPSTREAM_READINESS`：** `/models` Key/模型预检成功不代表真实工具能启动。已知同一模型的失败会直接显示保存的终态，不会再次下载或盲目提交；上游问题处理后再加 `--repair`（PowerShell `-Repair`）明确重测。如果接受 **ChatGPT Web 账号保存历史**的隐私差异，可以主动用持久模式再验收：macOS/Linux 在安装命令的 `--lab` 后加 `--model chatgpt-web/gpt-6-tools-persist`；Windows 在 `-Lab` 后加 `-Model 'chatgpt-web/gpt-6-tools-persist'`。不自动切换、不启用 Memory；已有成功证据仅覆盖维护者的内网持久模式，HTTPS 和成员设备仍须独立真实验收。
 
 安装源代码、版本发行与反馈：[codex-101](https://github.com/Molaison/codex-101)。

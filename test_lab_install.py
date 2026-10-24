@@ -35,6 +35,29 @@ class LabInstallTests(unittest.TestCase):
         self.assertEqual(code, "UPSTREAM_READINESS")
         self.assertIn("维护者", hint)
 
+    def test_known_upstream_failure_is_not_reinstalled_or_blindly_resubmitted(self):
+        directory = self.root / "checks/attempt-existing"
+        directory.mkdir(parents=True)
+        (directory / "state.json").write_text(json.dumps({
+            "status": "terminal", "model": c.LAB_CPR_MODEL, "marker": "CPC-test-END",
+            "marker_path": str(directory / "marker.txt"), "return_code": 1,
+            "connection": {"url": c.LAB_CPR_URL}}))
+        (directory / "events.jsonl").write_text(json.dumps({
+            "type": "error", "message": "ChatGPT personalization preflight exceeded its readiness deadline"}))
+        (self.root / "checks/current.json").write_text(json.dumps({"directory": str(directory)}))
+        with mock.patch.object(c, "state_directory", return_value=self.root), \
+                mock.patch.object(c, "saved_connection", return_value=None), \
+                mock.patch.object(c, "official_client", side_effect=RuntimeError("attempted a client install")) as install:
+            self.assertEqual(c.native_setup(["--lab"]), 1)
+            install.assert_not_called()
+            report = json.loads((self.root / "native-installation.json").read_text())
+            self.assertEqual(report["code"], "UPSTREAM_READINESS")
+            self.assertIn("chatgpt-web/gpt-6-tools-persist", report["hint"])
+            for arguments in (["--lab", "--repair"], ["--lab", "--model", "chatgpt-web/gpt-6-tools-persist"]):
+                with self.assertRaisesRegex(RuntimeError, "attempted a client install"):
+                    c.native_setup(arguments)
+            self.assertEqual(install.call_count, 2)
+
     def test_check_results_identify_the_endpoint_actually_tested(self):
         endpoint = "http://127.0.0.1:18082/v1"
         for name, status, code in (("pending", "running", "CHECK_PENDING"),
