@@ -43,3 +43,21 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: ./test_windows_bootstrap.ps1
+
+  official-client:
+    name: Verified official Codex stable / ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Download SHA512-verified npm latest and execute native Codex
+        env:
+          CODEX_HOME: ${{ runner.temp }}/codex101-official-smoke
+        run: |
+          python -c "from codex_provider import official_client, client_version; binary=official_client(); print('Verified native Codex:', client_version(binary))"

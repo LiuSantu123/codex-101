@@ -14,26 +14,8 @@ jobs:
   test:
     uses: ./.github/workflows/test.yml
 
-  official-binary:
-    name: Official npm stable binary / ${{ matrix.os }}
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-      - name: Download, verify SHA512 and run actual latest official Codex
-        env:
-          CODEX_HOME: ${{ runner.temp }}/codex101-binary-smoke
-        run: |
-          python -c "from codex_provider import official_client, client_version; binary=official_client(); print('Verified official Codex', client_version(binary))"
-
   preview:
-    needs: [test, official-binary]
+    needs: test
     runs-on: ubuntu-latest
     permissions:
       contents: write
