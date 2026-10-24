@@ -27,13 +27,13 @@ param([string]$Url = $env:CODEX_PROVIDER_URL, [string]$Model, [switch]$Repair, [
         if (-not $Selected) { throw 'No published codex-101 release contains all four installer assets.' }
         $Release = $Selected.tag_name
     }
-    $Base = if ($env:CODEX_CONNECT_BASE) { $env:CODEX_CONNECT_BASE } elseif ($env:CODEX_CONNECT_REF) {
+    $Base = if ($env:CODEX_CONNECT_BASE) { $env:CODEX_CONNECT_BASE } elseif ($env:CODEX_CONNECT_REF -and $Release -notmatch '^v\d+\.\d+\.\d+$') {
         "https://raw.githubusercontent.com/Molaison/codex-101/$Release"
     } else { "https://github.com/Molaison/codex-101/releases/download/$Release" }
     $Root = Join-Path $env:LOCALAPPDATA 'codex-provider-connect'
     $Bin = Join-Path $env:USERPROFILE '.local\bin'
     $Launcher = Join-Path $Bin 'codex.exe'
-    $Python = Join-Path $Root 'python\python.exe'
+    $Python = if ($env:CODEX_CONNECT_PYTHON) { $env:CODEX_CONNECT_PYTHON } else { Join-Path $Root 'python\python.exe' }
     $Helper = Join-Path $Root 'codex_provider.py'
     $CatalogPath = Join-Path $Root 'model_catalog.json'
     $Stamp = Join-Path $Root 'payload-ref'
@@ -41,16 +41,72 @@ param([string]$Url = $env:CODEX_PROVIDER_URL, [string]$Model, [switch]$Repair, [
     $Temporary = Join-Path ([IO.Path]::GetTempPath()) ('codex-provider-install-' + [Guid]::NewGuid().ToString('N'))
     New-Item -ItemType Directory -Path $Temporary | Out-Null
     try {
-        if (-not (Test-Path -LiteralPath $Python)) {
-            $Archive = Join-Path $Temporary 'python.zip'
-            $PythonUrl = 'https://www.python.org/ftp/python/3.13.7/python-3.13.7-embed-amd64.zip'
-            $Expected = 'f6cca216a359be84797cabb54149ce5e062afb16cc7567eb7fc51cacb2d86b65'
-            Invoke-WebRequest -UseBasicParsing -Uri $PythonUrl -OutFile $Archive
-            if ((Get-FileHash -Algorithm SHA256 -LiteralPath $Archive).Hash.ToLowerInvariant() -ne $Expected) {
-                throw 'Python archive SHA256 mismatch; nothing was executed.'
+        if ($env:CODEX_CONNECT_PYTHON) {
+            & $Python -X utf8 -c 'import sys; assert sys.version_info >= (3, 8)'
+            if ($LASTEXITCODE -ne 0) { throw 'CODEX_CONNECT_PYTHON is not Python 3.8+.' }
+        } else {
+            $PythonHealthy = $false
+            if (Test-Path -LiteralPath $Python) {
+                try {
+                    & $Python -X utf8 -c 'import sys; assert sys.version_info >= (3, 8)'
+                    $PythonHealthy = $LASTEXITCODE -eq 0
+                } catch { $PythonHealthy = $false }
             }
-            Expand-Archive -LiteralPath $Archive -DestinationPath (Join-Path $Temporary 'python')
-            Move-Item -LiteralPath (Join-Path $Temporary 'python') -Destination (Join-Path $Root 'python')
+            if (-not $PythonHealthy) {
+                $Archive = Join-Path $Temporary 'python.zip'
+                $PythonUrl = 'https://www.python.org/ftp/python/3.13.7/python-3.13.7-embed-amd64.zip'
+                $Expected = 'f6cca216a359be84797cabb54149ce5e062afb16cc7567eb7fc51cacb2d86b65'
+                Invoke-WebRequest -UseBasicParsing -Uri $PythonUrl -OutFile $Archive
+                if ((Get-FileHash -Algorithm SHA256 -LiteralPath $Archive).Hash.ToLowerInvariant() -ne $Expected) {
+                    throw 'Python archive SHA256 mismatch; nothing was executed.'
+                }
+                $Staged = Join-Path $Temporary 'python'
+                Expand-Archive -LiteralPath $Archive -DestinationPath $Staged
+                & (Join-Path $Staged 'python.exe') -X utf8 -c 'import sys; assert sys.version_info >= (3, 8)'
+                if ($LASTEXITCODE -ne 0) { throw 'Downloaded Python could not start; original cache retained.' }
+                $InstalledPython = Join-Path $Root 'python'
+                $Backup = $null
+                if (Test-Path -LiteralPath $InstalledPython) {
+                    $Backup = Join-Path $Root ('python.unusable-' + [Guid]::NewGuid().ToString('N'))
+                    Move-Item -LiteralPath $InstalledPython -Destination $Backup
+                }
+                try {
+                    Move-Item -LiteralPath $Staged -Destination $InstalledPython
+                } catch {
+                    if ($Backup) { Move-Item -LiteralPath $Backup -Destination $InstalledPython }
+                    throw
+                }
+            }
+        }
+        if ($Release -match '^v\d+\.\d+\.\d+$' -and [version]$Release.Substring(1) -ge [version]'0.2.0') {
+            $PayloadDir = $Temporary
+            $Manager = Join-Path $Temporary 'install_lifecycle.py'
+            $CachedManager = Join-Path $Root 'install_lifecycle.py'
+            $CachedRelease = Join-Path (Join-Path $Root 'releases') $Release
+            if ((Test-Path -LiteralPath $CachedManager) -and (Test-Path -LiteralPath (Join-Path $CachedRelease 'release_manifest.json'))) {
+                & $Python -X utf8 $CachedManager --root $Root verify --release $Release *> $null
+                if ($LASTEXITCODE -eq 0) {
+                    $PayloadDir = $CachedRelease
+                    $Manager = $CachedManager
+                    Write-Host "Reusing verified local $Release payloads."
+                }
+            }
+            if ($PayloadDir -eq $Temporary) {
+                foreach ($Name in @('release_manifest.json', 'install_lifecycle.py', 'codex_provider.py', 'model_catalog.json')) {
+                    Invoke-WebRequest -UseBasicParsing -Uri "$Base/$Name" -TimeoutSec 180 -OutFile (Join-Path $Temporary $Name)
+                }
+            }
+            $SetupArguments = @()
+            if ($DoRepair) { $SetupArguments += '--repair' }
+            if ($DoReconfigure) { $SetupArguments += '--reconfigure' }
+            if ($DoRestartIfIdle) { $SetupArguments += '--restart-if-idle' }
+            if ($DoLab) { $SetupArguments += '--lab' }
+            elseif ($ProviderUrl) { $SetupArguments += @('--url', $ProviderUrl) }
+            if ($ModelId) { $SetupArguments += @('--model', $ModelId) }
+            & $Python -X utf8 $Manager --root $Root install `
+                --release $Release --payload-dir $PayloadDir -- @SetupArguments
+            if ($LASTEXITCODE -ne 0) { throw 'Installation is not READY; run codex101 recover or inspect the staged transaction.' }
+            return
         }
         $Tagged = $Release -match '^v\d+\.\d+\.\d+$'
         $ExpectedVersion = 'VERSION = "' + $Release.TrimStart('v') + '"'

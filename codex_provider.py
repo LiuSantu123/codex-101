@@ -32,8 +32,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-VERSION = "0.1.1"
-OFFICIAL_CODEX_VERSION = "0.162.1"
+VERSION = "0.2.0"
 LAB_CPR_URL = "https://cpr.molaisonz.dpdns.org/v1"
 LAB_CPR_MODEL = "chatgpt-web/gpt-6-tools-temp"
 LAB_HTTP_RETRIES = 8
@@ -616,8 +615,28 @@ def _download(url, target, direct=False):
             time.sleep(attempt + 1)
 
 
-def official_client(direct=False):
-    """安装固定、未修改的官方平台包；不依赖 npm，不替换 PATH 中的 codex。"""
+def npm_metadata(url, direct=False):
+    for attempt in range(3):
+        try:
+            with open_url(url, timeout=30, direct=direct) as response:
+                return json.load(response)
+        except (urllib.error.URLError, TimeoutError, ConnectionError, OSError):
+            if attempt == 2:
+                raise ValueError("npm registry 连续三次请求失败；保留原 Codex，不更换版本。") from None
+            time.sleep(attempt + 1)
+
+
+def latest_official_version(direct=False):
+    """Resolve npm's stable dist-tag once per explicit install/upgrade."""
+    metadata = npm_metadata("https://registry.npmjs.org/@openai/codex/latest", direct=direct)
+    version = metadata.get("version")
+    if metadata.get("name") != "@openai/codex" or not isinstance(version, str) or not re.fullmatch(r"\d+\.\d+\.\d+", version):
+        raise ValueError("npm latest 未返回有效的官方 Codex 稳定版本；原客户端保持不变。")
+    return version
+
+
+def official_client(direct=False, upgrade=False):
+    """Cache unmodified stable platform releases; upgrade only when requested."""
     machine = {"amd64": "x64", "x86_64": "x64", "aarch64": "arm64",
                "arm64": "arm64"}.get(platform.machine().lower())
     system = "win32" if os.name == "nt" else sys.platform
@@ -630,24 +649,49 @@ def official_client(direct=False):
     triple = triples.get((system, machine))
     if not triple:
         raise ValueError("当前平台没有受支持的官方包；请用 CODEX_BINARY 指定兼容的 Codex。")
-    package_version = OFFICIAL_CODEX_VERSION + "-" + system + "-" + machine
     root = state_directory() / "official"
     secure_directory(root)
+    record = {}
+    if client_record_path().is_file():
+        try:
+            record = json.loads(client_record_path().read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            pass
+    if not upgrade and record.get("source") == "official-npm":
+        cached = Path(record.get("path", ""))
+        version = record.get("version", "")
+        if (re.fullmatch(r"\d+\.\d+\.\d+", version)
+                and cached.is_file() and root.resolve() in cached.resolve().parents):
+            try:
+                if (client_version([str(cached)]) == version and
+                        (not record.get("sha256") or _sha256_file(cached) == record["sha256"])):
+                    print("复用已缓存的官方 Codex %s，不查询或下载新版本。" % version, file=sys.stderr)
+                    return [str(cached)]
+            except (ValueError, OSError, subprocess.SubprocessError):
+                pass
+    resolved_version = latest_official_version(direct=direct)
+    if upgrade and record.get("source") == "official-npm":
+        previous = record.get("version", "")
+        if (re.fullmatch(r"\d+\.\d+\.\d+", previous)
+                and tuple(map(int, previous.split("."))) > tuple(map(int, resolved_version.split(".")))):
+            raise ValueError("当前官方 Codex %s 高于 npm stable %s；拒绝隐式降级。" % (previous, resolved_version))
+    package_version = resolved_version + "-" + system + "-" + machine
     target = root / package_version
     relative = Path("package/vendor") / triple / "bin" / ("codex.exe" if os.name == "nt" else "codex")
     binary = target / relative
     usable = False
     if binary.is_file():
         try:
-            usable = client_version([str(binary)]) == OFFICIAL_CODEX_VERSION
+            usable = client_version([str(binary)]) == resolved_version
+            if (usable and record.get("path") == str(binary) and record.get("sha256")):
+                usable = _sha256_file(binary) == record["sha256"]
         except (ValueError, OSError, subprocess.SubprocessError):
             pass
     if usable:
-        print("复用已缓存的官方 Codex %s，不重新下载。" % OFFICIAL_CODEX_VERSION, file=sys.stderr)
+        print("复用已缓存的官方 Codex %s，不重新下载。" % resolved_version, file=sys.stderr)
     if not usable:
         metadata_url = "https://registry.npmjs.org/@openai/codex/" + package_version
-        with open_url(metadata_url, timeout=30, direct=direct) as response:
-            metadata = json.load(response)
+        metadata = npm_metadata(metadata_url, direct=direct)
         if metadata.get("name") != "@openai/codex" or metadata.get("version") != package_version:
             raise ValueError("官方包元数据与固定版本不一致；未安装。")
         distribution = metadata["dist"]
@@ -657,7 +701,7 @@ def official_client(direct=False):
         integrity = distribution.get("integrity", "")
         if not integrity.startswith("sha512-"):
             raise ValueError("官方包缺少 SHA512 完整性信息；未安装。")
-        print("下载官方 Codex %s（Linux x64 约 165 MB），用于首次安装或恢复损坏副本。" % OFFICIAL_CODEX_VERSION, file=sys.stderr)
+        print("下载官方 Codex %s（平台包大小视发布版本而定）。" % resolved_version, file=sys.stderr)
         with tempfile.TemporaryDirectory(prefix=".install-", dir=str(root)) as directory:
             stage = Path(directory)
             archive = stage / "codex.tgz"
@@ -686,7 +730,7 @@ def official_client(direct=False):
                         with package.extractfile(member) as source, destination.open("wb") as output:
                             shutil.copyfileobj(source, output)
                         destination.chmod(member.mode & 0o755)
-            if client_version([str(unpacked / relative)]) != OFFICIAL_CODEX_VERSION:
+            if client_version([str(unpacked / relative)]) != resolved_version:
                 raise ValueError("官方 Codex 无法正常运行或版本不符；原客户端保持不变。")
             # 只替换本工具拥有的官方副本，保留损坏副本供恢复。
             backup = None
@@ -699,9 +743,10 @@ def official_client(direct=False):
                 if backup is not None:
                     os.rename(backup, target)
                 raise
-    if client_version([str(binary)]) != OFFICIAL_CODEX_VERSION:
+    if client_version([str(binary)]) != resolved_version:
         raise ValueError("已下载的官方 Codex 不可用；请保留现场并联系维护者。")
-    private_json(client_record_path(), {"path": str(binary), "version": OFFICIAL_CODEX_VERSION,
+    private_json(client_record_path(), {"path": str(binary), "version": resolved_version,
+                                       "sha256": _sha256_file(binary),
                                        "source": "official-npm", "patched": False})
     return [str(binary)]
 
@@ -970,8 +1015,7 @@ def native_client(direct=False):
         version = version or client_version(binary)
     except (ValueError, OSError, subprocess.SubprocessError):
         raise ValueError("现有 Codex 无法运行；未重新下载或替换，请修复原安装或设置 CODEX_BINARY。") from None
-    if tuple(int(part) for part in version.split("-")[0].split(".")[:3]) < (0, 162, 1):
-        raise ValueError("原生接入需要 Codex 0.162.1 或更新版本；现有版本为 %s，未重新下载或替换，请先升级。" % version)
+    # NativeRPC/config capability validation below is authoritative: no pinned Codex minimum.
     if preserve_entry:
         print("复用现有 Codex %s，不重新安装。" % version, file=sys.stderr)
         return binary
@@ -1636,6 +1680,7 @@ def native_setup(arguments):
     parser.add_argument("--catalog-file", help="维护者提供的本地 Codex model catalog；默认使用安装包内维护的目录")
     parser.add_argument("--model")
     parser.add_argument("--reconfigure", action="store_true")
+    parser.add_argument("--upgrade-codex", action="store_true", help="显式升级官方 Codex 到 npm stable latest；默认复用已验证版本")
     parser.add_argument("--repair", action="store_true", help="强制重做已通过的自检；失败终态默认重试，未终止时只恢复原回合")
     parser.add_argument("--restart-if-idle", action="store_true", help="明确允许需要刷新配置的本地 server 只在空闲时用官方命令重启")
     parser.add_argument("--skip-check", action="store_true", help="只配置，返回2/NOT_VERIFIED，不报成功")
@@ -1644,6 +1689,8 @@ def native_setup(arguments):
     args = parser.parse_args(arguments)
     if args.skip_check and args.check:
         parser.error("--skip-check 与 --check 不能同时使用")
+    if args.upgrade_codex and not args.lab:
+        parser.error("--upgrade-codex 只用于 --lab 官方受管理副本；不升级用户原有的 Codex")
     previous = saved_connection()
     retry_failed = False
     # Never rotate a credential or route underneath an unfinished accepted check.
@@ -1662,7 +1709,7 @@ def native_setup(arguments):
         expected_model = args.model or (LAB_CPR_MODEL if args.lab else (previous or {}).get("default_model"))
         if (result["status"] == "failed" and result["code"] == "UPSTREAM_READINESS"
                 and result.get("endpoint") == expected_url and result.get("model") == expected_model
-                and not (args.repair or args.reconfigure or args.skip_check or args.catalog_file
+                and not (args.repair or args.reconfigure or args.upgrade_codex or args.skip_check or args.catalog_file
                          or args.provider or args.restart_if_idle)):
             result = native_check_report(result)
             result["hint"] += " 已复用上次失败记录，未重新下载 Codex 或提交模型请求；上游恢复后加 --repair 显式重测。"
@@ -1675,7 +1722,7 @@ def native_setup(arguments):
             return 1
         retry_failed = result["status"] == "failed"
     lab_sqlite = lab_sqlite_home() if args.lab else None
-    binary = official_client() if args.lab else native_client()
+    binary = official_client(upgrade=args.upgrade_codex) if args.lab else native_client()
     options = []
     for name in ("url", "provider"):
         if getattr(args, name):
@@ -2072,7 +2119,7 @@ def main():
                                          里已有的 model_providers.<NAME>，不重复输入地址与密钥
   codex-provider sync                    仅刷新目录
   codex-provider client status           查看当前使用的客户端
-  codex-provider client official         安装固定版本的官方原版副本，不修改已有 Codex
+  codex-provider client official         安装当前 npm stable 最新的官方原版副本，不修改已有 Codex
   codex-provider client install SRC      安装预编译的补丁客户端, 需 --sha256
   codex-provider client patch            复制官方 Codex 并直接改 1 MiB 目录上限为 8 MiB
   codex-provider client remove           回到官方 Codex

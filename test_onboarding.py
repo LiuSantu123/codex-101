@@ -232,6 +232,86 @@ print(json.dumps({'type':'turn.completed'}))
 
 
 class OfficialInstallTests(unittest.TestCase):
+    def test_modified_cached_official_binary_is_not_retrusted_by_version_string(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            script = b'#!/bin/sh\necho "codex-cli 0.162.1"\n'
+            archive = io.BytesIO()
+            with tarfile.open(fileobj=archive, mode="w:gz") as package:
+                member = tarfile.TarInfo("package/vendor/x86_64-unknown-linux-musl/bin/codex")
+                member.size, member.mode = len(script), 0o755
+                package.addfile(member, io.BytesIO(script))
+            blob = archive.getvalue()
+            metadata = {"name": "@openai/codex", "version": "0.162.1-linux-x64", "dist": {
+                "tarball": "https://registry.npmjs.org/@openai/codex/-/fixture.tgz",
+                "integrity": "sha512-" + base64.b64encode(hashlib.sha512(blob).digest()).decode()}}
+            downloads = []
+
+            def fetch(_url, destination):
+                downloads.append(1)
+                destination.write_bytes(blob)
+
+            with mock.patch.dict(os.environ, {"CODEX_HOME": str(root)}), \
+                    mock.patch.object(connector.platform, "machine", return_value="x86_64"), \
+                    mock.patch.object(connector.sys, "platform", "linux"), \
+                    mock.patch.object(connector, "latest_official_version", return_value="0.162.1"), \
+                    mock.patch.object(connector.urllib.request, "urlopen", side_effect=lambda *a, **k: io.BytesIO(json.dumps(metadata).encode())), \
+                    mock.patch.object(connector, "_download", side_effect=fetch):
+                original = connector.official_client()
+                Path(original[0]).write_bytes(script + b'# changed without altering --version\n')
+                repaired = connector.official_client(upgrade=True)
+                self.assertEqual(original, repaired)
+                self.assertEqual(Path(repaired[0]).read_bytes(), script)
+                self.assertEqual(len(downloads), 2)
+
+    def test_latest_stable_is_resolved_on_install_and_explicit_upgrade_only(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            latest = ["0.174.0"]
+            requests = []
+            archives = {}
+            for version in ("0.174.0", "0.175.0"):
+                archive = io.BytesIO()
+                binary = ('#!/bin/sh\necho "codex-cli %s"\n' % version).encode()
+                with tarfile.open(fileobj=archive, mode="w:gz") as package:
+                    member = tarfile.TarInfo("package/vendor/x86_64-unknown-linux-musl/bin/codex")
+                    member.size, member.mode = len(binary), 0o755
+                    package.addfile(member, io.BytesIO(binary))
+                archives[version] = archive.getvalue()
+
+            def metadata(request, timeout, direct=False):
+                url = request if isinstance(request, str) else request.full_url
+                requests.append(url)
+                if url.endswith("/latest"):
+                    return io.BytesIO(json.dumps({"name": "@openai/codex", "version": latest[0]}).encode())
+                version = url.rsplit("/", 1)[-1].split("-")[0]
+                contents = archives[version]
+                return io.BytesIO(json.dumps({"name": "@openai/codex", "version": url.rsplit("/", 1)[-1],
+                    "dist": {"tarball": "https://registry.npmjs.org/@openai/codex/-/" + version + ".tgz",
+                             "integrity": "sha512-" + base64.b64encode(hashlib.sha512(contents).digest()).decode()}}).encode())
+
+            def download(url, destination, direct=False):
+                version = url.rsplit("/", 1)[-1].split(".")[0:3]
+                destination.write_bytes(archives[".".join(version)])
+
+            with mock.patch.dict(os.environ, {"CODEX_HOME": str(root)}), \
+                    mock.patch.object(connector.platform, "machine", return_value="x86_64"), \
+                    mock.patch.object(connector.sys, "platform", "linux"), \
+                    mock.patch.object(connector, "open_url", side_effect=metadata), \
+                    mock.patch.object(connector, "_download", side_effect=download):
+                original = connector.official_client()
+                self.assertEqual(connector.client_version(original), "0.174.0")
+                latest[0] = "0.175.0"
+                self.assertEqual(connector.official_client(), original)
+                self.assertEqual(len([item for item in requests if item.endswith("/latest")]), 1)
+                updated = connector.official_client(upgrade=True)
+                self.assertEqual(connector.client_version(updated), "0.175.0")
+                self.assertTrue(Path(original[0]).is_file())
+                self.assertNotEqual(original, updated)
+                latest[0] = "0.174.0"
+                with self.assertRaisesRegex(ValueError, "拒绝隐式降级"):
+                    connector.official_client(upgrade=True)
+
     def test_verified_official_archive_and_integrity_failure(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -248,6 +328,7 @@ class OfficialInstallTests(unittest.TestCase):
             with mock.patch.dict(os.environ, {"CODEX_HOME": str(root)}), \
                     mock.patch.object(connector.platform, "machine", return_value="x86_64"), \
                     mock.patch.object(connector.sys, "platform", "linux"), \
+                    mock.patch.object(connector, "latest_official_version", return_value="0.162.1"), \
                     mock.patch.object(connector.urllib.request, "urlopen", side_effect=lambda *a, **k: io.BytesIO(json.dumps(metadata).encode())), \
                     mock.patch.object(connector, "_download", side_effect=lambda url, target: target.write_bytes(blob)):
                 installed = connector.official_client()
@@ -540,9 +621,9 @@ class NativeIntegrationTests(unittest.TestCase):
         source = self.home / "source"
         source.mkdir()
         (source / "model_catalog.json").write_text('{"models":[{"slug":"fixture"}]}')
-        (source / "codex_provider.py").write_text('''# codex-provider-connect\nVERSION = "%s"\nimport sys\nassert sys.argv[1] == "_native-setup"\nassert "--url" in sys.argv\nprint("fixture setup passed")\n''' % connector.VERSION)
+        (source / "codex_provider.py").write_text('''# codex-provider-connect\nVERSION = "%s"\nimport sys\nassert sys.argv[1] == "_native-setup"\nassert "--url" in sys.argv\nprint("fixture setup passed")\n''' % "0.1.1")
         env = dict(os.environ, PATH=os.environ.get("PATH", "/usr/bin:/bin"),
-                   CODEX_CONNECT_BASE=source.as_uri(), CODEX_CONNECT_REF="v" + connector.VERSION)
+                   CODEX_CONNECT_BASE=source.as_uri(), CODEX_CONNECT_REF="v0.1.1")
         result = subprocess.run(["bash", str(ROOT / "install.sh"), "--url", self.connection["url"]],
                                 env=env, capture_output=True, text=True, timeout=15)
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -628,12 +709,11 @@ class NativeClientReuseTests(unittest.TestCase):
             selected = connector.native_client()
         self.assertEqual(Path(selected[0]).resolve(), binary.resolve())
 
-    def test_incompatible_existing_client_is_not_silently_reinstalled(self):
+    def test_existing_client_is_preserved_without_a_version_pin(self):
         binary = self.client(self.home / "bin/codex", "0.160.0")
         with mock.patch.object(connector.shutil, "which", return_value=str(binary)), \
                 mock.patch.object(connector, "official_client", side_effect=AssertionError("must not download")):
-            with self.assertRaisesRegex(ValueError, "0.162.1"):
-                connector.native_client()
+            self.assertEqual(connector.native_client(), [str(binary)])
         self.assertFalse((self.home / ".local/bin/codex").exists())
 
     def test_only_absent_clients_trigger_one_download(self):
@@ -657,8 +737,8 @@ class ReleaseBootstrapTests(unittest.TestCase):
         self.root = self.home / ".codex/provider-connect"
         self.env = {"HOME": str(self.home), "CODEX_HOME": str(self.home / ".codex"),
                     "PATH": os.environ.get("PATH", os.defpath), "NO_PROXY": "127.0.0.1", "no_proxy": "127.0.0.1"}
-        self.latest = "v" + connector.VERSION
-        major, minor, patch = connector.VERSION.split(".")
+        self.latest = "v0.1.1"  # Exercise the supported pre-manifest migration boundary.
+        major, minor, patch = self.latest[1:].split(".")
         self.future = "v%s.%s.%s" % (major, minor, int(patch) + 1)
         self.requests = []
         self.missing_catalog = False
@@ -722,14 +802,14 @@ class ReleaseBootstrapTests(unittest.TestCase):
         self.flip_during_download = True
         installed = self.install()
         self.assertEqual(installed.returncode, 0, installed.stderr)
-        self.assertIn('VERSION = "' + connector.VERSION + '"', (self.root / "codex_provider.py").read_text())
+        self.assertIn('VERSION = "' + "0.1.1" + '"', (self.root / "codex_provider.py").read_text())
         updated = self.install()
         self.assertEqual(updated.returncode, 0, updated.stderr)
         self.assertIn('VERSION = "' + self.future[1:] + '"', (self.root / "codex_provider.py").read_text())
         self.assertEqual(self.requests, ["/releases/latest/download/install.sh",
             "/repos/Molaison/codex-101/releases?per_page=30",
-            "/releases/download/v" + connector.VERSION + "/codex_provider.py",
-            "/releases/download/v" + connector.VERSION + "/model_catalog.json",
+            "/releases/download/v0.1.1/codex_provider.py",
+            "/releases/download/v0.1.1/model_catalog.json",
             "/releases/latest/download/install.sh", "/repos/Molaison/codex-101/releases?per_page=30",
             "/releases/download/" + self.future + "/codex_provider.py",
             "/releases/download/" + self.future + "/model_catalog.json"])
@@ -742,8 +822,8 @@ class ReleaseBootstrapTests(unittest.TestCase):
         self.assertIn("复用本地", second.stderr)
         self.assertEqual(self.requests, ["/releases/latest/download/install.sh",
             "/repos/Molaison/codex-101/releases?per_page=30",
-            "/releases/download/v" + connector.VERSION + "/codex_provider.py",
-            "/releases/download/v" + connector.VERSION + "/model_catalog.json",
+            "/releases/download/v0.1.1/codex_provider.py",
+            "/releases/download/v0.1.1/model_catalog.json",
             "/releases/latest/download/install.sh", "/repos/Molaison/codex-101/releases?per_page=30"])
 
     def test_stable_tag_is_preferred_over_newer_prerelease(self):

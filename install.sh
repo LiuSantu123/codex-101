@@ -43,13 +43,34 @@ main() {
         fi
     fi
     base="https://github.com/Molaison/codex-101/releases/download/${release}"
-    # An explicit ref may be a branch or commit and can have no release assets.
-    if [[ -n "${CODEX_CONNECT_REF:-}" ]]; then
+    # An explicit branch/commit can have no release assets; version tags use releases.
+    if [[ -n "${CODEX_CONNECT_REF:-}" && ! "$release" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
         base="https://raw.githubusercontent.com/Molaison/codex-101/${release}"
     fi
     base="${CODEX_CONNECT_BASE:-$base}"
     mkdir -p "$root"
     chmod 700 "$root"
+    # New releases have a signed-by-release manifest and a recoverable Python
+    # lifecycle engine. Keep v0.1.x's existing installer contract for migration.
+    if [[ "$release" =~ ^v([0-9]+)\.([0-9]+)\.([0-9]+)$ ]] &&
+       (( 10#${BASH_REMATCH[1]} > 0 || 10#${BASH_REMATCH[2]} >= 2 )); then
+        if [[ -f "$root/install_lifecycle.py" && -f "$root/releases/$release/release_manifest.json" ]] &&
+           python3 "$root/install_lifecycle.py" --root "$root" verify --release "$release" >/dev/null 2>&1; then
+            printf '复用已验证的本地 %s 发布组件。\n' "$release" >&2
+            python3 "$root/install_lifecycle.py" --root "$root" install \
+                --release "$release" --payload-dir "$root/releases/$release" -- "$@"
+            return
+        fi
+        temporary=$(mktemp -d "${root}/.installer.XXXXXX")
+        trap 'rm -rf -- "${temporary:-}"' EXIT
+        for payload in release_manifest.json install_lifecycle.py codex_provider.py model_catalog.json; do
+            curl --http1.1 --fail --silent --show-error --location --retry 2 --max-time 180 \
+                "${base}/${payload}" -o "${temporary}/${payload}"
+        done
+        python3 "$temporary/install_lifecycle.py" --root "$root" install \
+            --release "$release" --payload-dir "$temporary" -- "$@"
+        return
+    fi
     # Tagged release assets are immutable. Re-running a failed model check must
     # not download the same helper/catalog again; mutable refs always refresh.
     if [[ "$release" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ && -z "${CODEX_CONNECT_BASE:-}" \

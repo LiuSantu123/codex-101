@@ -1,0 +1,66 @@
+name: Publish preview release
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Explicit preview tag, e.g. v0.2.0 (no automatic stable promotion)'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    uses: ./.github/workflows/test.yml
+
+  official-binary:
+    name: Official npm stable binary / ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Download, verify SHA512 and run actual latest official Codex
+        env:
+          CODEX_HOME: ${{ runner.temp }}/codex101-binary-smoke
+        run: |
+          python -c "from codex_provider import official_client, client_version; binary=official_client(); print('Verified official Codex', client_version(binary))"
+
+  preview:
+    needs: [test, official-binary]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Check version and immutable payloads
+        env:
+          REQUESTED_TAG: ${{ inputs.version }}
+        run: |
+          python 01_build_release_manifest.py --check
+          python - <<'PY'
+          import json, os, re
+          from pathlib import Path
+          manifest = json.loads(Path('release_manifest.json').read_text())
+          tag = os.environ['REQUESTED_TAG']
+          assert re.fullmatch(r'v\d+\.\d+\.\d+', tag), 'Invalid release tag'
+          assert manifest['release'] == tag, 'Release tag does not match source manifest'
+          PY
+      - name: Publish only after cross-platform tests
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REQUESTED_TAG: ${{ inputs.version }}
+        run: |
+          gh release create "$REQUESTED_TAG" --target "$GITHUB_SHA" --prerelease \
+            --title "$REQUESTED_TAG (preview)" \
+            install.sh install.ps1 codex_provider.py model_catalog.json \
+            install_lifecycle.py release_manifest.json
