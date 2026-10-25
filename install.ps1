@@ -1,13 +1,15 @@
 # Published at releases/latest/download/install.ps1; payloads stay on one release.
 # codex-provider-connect: user-local native Windows bootstrap; no administrator needed.
-param([string]$Url = $env:CODEX_PROVIDER_URL, [string]$Model, [switch]$Repair, [switch]$Reconfigure, [switch]$RestartIfIdle, [switch]$Lab)
+param([string]$Url = $env:CODEX_PROVIDER_URL, [string]$Model, [string]$SqliteHome, [switch]$Repair, [switch]$Reconfigure, [switch]$RestartIfIdle, [switch]$Lab)
 
 & {
-    param([string]$ProviderUrl, [string]$ModelId, [bool]$DoRepair, [bool]$DoReconfigure, [bool]$DoRestartIfIdle, [bool]$DoLab)
+    param([string]$ProviderUrl, [string]$ModelId, [string]$SelectedSqliteHome, [bool]$DoRepair, [bool]$DoReconfigure, [bool]$DoRestartIfIdle, [bool]$DoLab)
     $ErrorActionPreference = 'Stop'
+    try {
     $ProgressPreference = 'SilentlyContinue'
     [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
     if (-not [Environment]::Is64BitOperatingSystem) { throw '64-bit Windows is required.' }
+    if ($SelectedSqliteHome -and -not $DoLab) { throw '-SqliteHome requires -Lab.' }
 
     $Release = $env:CODEX_CONNECT_REF
     if (-not $Release) {
@@ -103,6 +105,7 @@ param([string]$Url = $env:CODEX_PROVIDER_URL, [string]$Model, [switch]$Repair, [
             if ($DoLab) { $SetupArguments += '--lab' }
             elseif ($ProviderUrl) { $SetupArguments += @('--url', $ProviderUrl) }
             if ($ModelId) { $SetupArguments += @('--model', $ModelId) }
+            if ($SelectedSqliteHome) { $SetupArguments += @('--sqlite-home', $SelectedSqliteHome) }
             & $Python -X utf8 $Manager --root $Root install `
                 --release $Release --payload-dir $PayloadDir -- @SetupArguments
             if ($LASTEXITCODE -ne 0) { throw 'Installation is not READY; run codex101 recover or inspect the staged transaction.' }
@@ -148,6 +151,7 @@ param([string]$Url = $env:CODEX_PROVIDER_URL, [string]$Model, [switch]$Repair, [
         if ($DoLab) { $Arguments += '--lab' }
         elseif ($ProviderUrl) { $Arguments += @('--url', $ProviderUrl) }
         if ($ModelId) { $Arguments += @('--model', $ModelId) }
+        if ($SelectedSqliteHome) { $Arguments += @('--sqlite-home', $SelectedSqliteHome) }
         & $Python -X utf8 $Helper @Arguments
         if ($LASTEXITCODE -ne 0) { throw 'Setup is not verified. Re-run the same fixed download command; no READY was issued.' }
         if ($DoLab) {
@@ -180,4 +184,28 @@ param([string]$Url = $env:CODEX_PROVIDER_URL, [string]$Model, [switch]$Repair, [
     finally {
         Remove-Item -LiteralPath $Temporary -Recurse -Force
     }
-} $Url $Model ([bool]$Repair) ([bool]$Reconfigure) ([bool]$RestartIfIdle) ([bool]$Lab)
+    } catch {
+        Write-Warning ("[NOT_READY] 安装未完成：{0}" -f $_.Exception.Message)
+        $KnownRoot = Join-Path $env:LOCALAPPDATA 'codex-provider-connect'
+        $KnownManager = Join-Path $KnownRoot 'install_lifecycle.py'
+        $KnownPython = if ($env:CODEX_CONNECT_PYTHON) { $env:CODEX_CONNECT_PYTHON } else { Join-Path $KnownRoot 'python\python.exe' }
+        if (Test-Path -LiteralPath $KnownManager) {
+            Write-Host ("[NEXT] 本地只读状态：& '{0}' -X utf8 '{1}' status" -f
+                $KnownPython.Replace("'", "''"), $KnownManager.Replace("'", "''"))
+            if (Test-Path -LiteralPath (Join-Path $KnownRoot 'pending.json')) {
+                Write-Host ("[NEXT] 恢复原事务：& '{0}' -X utf8 '{1}' recover" -f
+                    $KnownPython.Replace("'", "''"), $KnownManager.Replace("'", "''"))
+            }
+        }
+        $Retry = "& ([scriptblock]::Create((Invoke-WebRequest -UseBasicParsing 'https://raw.githubusercontent.com/Molaison/codex-101/main/install.ps1').Content))"
+        if ($DoLab) { $Retry += ' -Lab' }
+        elseif ($ProviderUrl) { $Retry += " -Url '" + $ProviderUrl.Replace("'", "''") + "'" }
+        if ($ModelId) { $Retry += " -Model '" + $ModelId.Replace("'", "''") + "'" }
+        if ($SelectedSqliteHome) { $Retry += " -SqliteHome '" + $SelectedSqliteHome.Replace("'", "''") + "'" }
+        if ($DoRepair) { $Retry += ' -Repair' }
+        if ($DoReconfigure) { $Retry += ' -Reconfigure' }
+        if ($DoRestartIfIdle) { $Retry += ' -RestartIfIdle' }
+        Write-Host "[NEXT] 排除错误原因后重试：$Retry"
+        throw
+    }
+} $Url $Model $SqliteHome ([bool]$Repair) ([bool]$Reconfigure) ([bool]$RestartIfIdle) ([bool]$Lab)
