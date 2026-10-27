@@ -528,6 +528,11 @@ def setup_transaction(root, tx, record):
               read_json(report_file) if report_file.is_file() and digest(report_file) != record.get("report_before")
               else {})  # Never classify a new local failure using a stale upstream error.
     code = report.get("code")
+    if returncode == 3:
+        # Exit 3 already means "configured before verify": the provider saved
+        # connection, catalog and launcher. A byte-identical report is not a
+        # stale upstream error, so never treat it as a local failure.
+        code = "CONFIGURED"
     old = record["from"]
     if returncode == 2 and code in ("SERVER_BUSY", "SERVER_RESTART_REQUIRED", "SERVER_CHANGED", "SERVER_RESTART_FAILED"):
         record["stage"] = "PENDING_RESTART"

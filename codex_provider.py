@@ -1636,7 +1636,7 @@ def check_result(directory):
             except ValueError:
                 pass  # 正在写入的最后一行，下次继续读同一回合。
     if record["status"] not in ("terminal", "worker_error"):
-        pids = [record.get("worker_pid"), record.get("client_pid")]
+        pids = [pid for pid in (record.get("worker_pid"), record.get("client_pid")) if pid]
         if pids and all(process_alive(pid) is False for pid in pids):
             # 进程全部消失却没有终态：现场只保留证据，绝不为同一回合重投模型请求。
             return {**identity, "status": "failed", "code": "CHECK_ABANDONED",
